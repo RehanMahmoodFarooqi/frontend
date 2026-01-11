@@ -1,12 +1,18 @@
 import express, { type Express } from "express";
 import fs from "fs";
 import { type Server } from "http";
-import { nanoid } from "nanoid";
 import path from "path";
-import { createServer as createViteServer } from "vite";
-import viteConfig from "../../vite.config";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export async function setupVite(app: Express, server: Server) {
+  // Dynamic import to avoid loading dev dependencies in production
+  const { createServer: createViteServer } = await import("vite");
+  const { default: viteConfig } = await import("../../vite.config");
+  const { nanoid } = await import("nanoid");
+
   const serverOptions = {
     middlewareMode: true,
     hmr: { server },
@@ -26,7 +32,7 @@ export async function setupVite(app: Express, server: Server) {
 
     try {
       const clientTemplate = path.resolve(
-        import.meta.dirname,
+        __dirname,
         "../..",
         "client",
         "index.html"
@@ -48,20 +54,37 @@ export async function setupVite(app: Express, server: Server) {
 }
 
 export function serveStatic(app: Express) {
-  const distPath =
-    process.env.NODE_ENV === "development"
-      ? path.resolve(import.meta.dirname, "../..", "dist", "public")
-      : path.resolve(import.meta.dirname, "public");
-  if (!fs.existsSync(distPath)) {
+  // In Vercel, the dist folder is relative to the root
+  // We check multiple possible locations for the build artifacts
+  const possiblePaths = [
+    path.resolve(__dirname, "public"),
+    path.resolve(__dirname, "..", "public"),
+    path.resolve(__dirname, "../..", "dist", "public"),
+    path.resolve(process.cwd(), "dist", "public"),
+    path.resolve(process.cwd(), "frontend", "dist", "public"),
+  ];
+
+  let distPath = possiblePaths.find((p) => fs.existsSync(p));
+
+  if (!distPath) {
     console.error(
-      `Could not find the build directory: ${distPath}, make sure to build the client first`
+      `Could not find the build directory in any of: ${possiblePaths.join(", ")}`
     );
+    // Fallback anyway to avoid immediate crash if possible
+    distPath = path.resolve(__dirname, "public");
+  } else {
+    console.log(`Serving static files from: ${distPath}`);
   }
 
   app.use(express.static(distPath));
 
   // fall through to index.html if the file doesn't exist
   app.use("*", (_req, res) => {
-    res.sendFile(path.resolve(distPath, "index.html"));
+    const indexPath = path.resolve(distPath!, "index.html");
+    if (fs.existsSync(indexPath)) {
+      res.sendFile(indexPath);
+    } else {
+      res.status(404).send("Not Found");
+    }
   });
 }
